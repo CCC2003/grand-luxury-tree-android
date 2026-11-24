@@ -1,0 +1,24 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.grandluxury.tree'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.grandluxury.tree'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+// Fail early rather than producing an empty application.
+tasks.named('preBuild').configure {
+    doFirst {
+        ['index.html','app.js','models/hand_landmarker.task','wasm/vision_wasm_internal.wasm','wasm/vision_wasm_nosimd_internal.wasm'].each { p ->
+            if (!file("src/main/assets/$p").isFile()) throw new GradleException("Missing offline asset: $p. Run python3 scripts/prepare_assets.py first.")
+        }
+    }
+}
