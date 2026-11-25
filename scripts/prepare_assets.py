@@ -16,6 +16,86 @@ def download(url, target):
     if target.stat().st_size == 0:
         raise RuntimeError(f'Empty download: {url}')
 
+
+def fix_photo_focus(js):
+    def replace_checked(old, new):
+        nonlocal js
+        if js.count(old) != 1:
+            raise RuntimeError(
+                "Photo focus patch mismatch: " + old[:80]
+            )
+        js = js.replace(old, new, 1)
+
+    # 1. 根据摄像机中心计算照片位置
+    replace_checked(
+        """const desiredWorldPos = new THREE.Vector3(0, 2, 35);
+                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
+                        target = desiredWorldPos.applyMatrix4(invMatrix);""",
+        """const desiredWorldPos = camera.localToWorld(
+                            new THREE.Vector3(0, 0, -15)
+                        );
+                        target = this.mesh.parent.worldToLocal(
+                            desiredWorldPos
+                        );"""
+    )
+
+    # 2. 自动适应横屏和竖屏尺寸
+    replace_checked(
+        "if (this.mesh === focusTargetMesh) s = 4.5; else s = this.baseScale * 0.8;",
+        """if (this.mesh === focusTargetMesh) {
+                        const frame = this.mesh.children[0];
+
+                        const w = frame.geometry.parameters.width
+                                  * frame.scale.x;
+
+                        const h = frame.geometry.parameters.height
+                                  * frame.scale.y;
+
+                        const viewH = 30 * Math.tan(
+                            THREE.MathUtils.degToRad(camera.fov / 2)
+                        ) / camera.zoom;
+
+                        const viewW = viewH * camera.aspect;
+
+                        s = Math.min(
+                            4.5,
+                            viewW * 0.80 / w,
+                            viewH * 0.70 / h
+                        );
+                    } else {
+                        s = this.baseScale * 0.8;
+                    }"""
+    )
+
+    # 3. 放大照片时暂停场景旋转
+    replace_checked(
+        """mainGroup.rotation.y = STATE.rotation.y;
+            mainGroup.rotation.x = STATE.rotation.x;""",
+        """if (STATE.mode === 'FOCUS') {
+                STATE.rotation.y = mainGroup.rotation.y;
+                STATE.rotation.x = mainGroup.rotation.x;
+            } else {
+                mainGroup.rotation.y = STATE.rotation.y;
+                mainGroup.rotation.x = STATE.rotation.x;
+            }
+
+            mainGroup.updateMatrixWorld(true);"""
+    )
+
+    # 4. 防止低帧率时动画插值越界
+    replace_checked(
+        "this.mesh.position.lerp(target, lerpSpeed * dt);",
+        "this.mesh.position.lerp(target, Math.min(1, lerpSpeed * dt));"
+    )
+
+    replace_checked(
+        "this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);",
+        "this.mesh.scale.lerp(new THREE.Vector3(s,s,s), Math.min(1, 4*dt));"
+    )
+
+    return js
+
+
 def patch(html):
     # Optional web statistics and remote fonts are unnecessary offline.
     html = re.sub(r'<link\b[^>]*href=["\']https://cdnjs\.cloudflare\.com/[^"\']+["\'][^>]*>', '', html, flags=re.I)
@@ -43,7 +123,7 @@ def patch(html):
     m = re.search(r'<script\s+type=["\']module["\']\s*>(.*?)</script>', html, re.S)
     if not m or './models/hand_landmarker.task' not in m.group(1) or './wasm' not in m.group(1):
         raise RuntimeError('Upstream layout changed; offline paths not found.')
-    js = m.group(1)
+    js = fix_photo_focus(m.group(1))
     html = html[:m.start()]+'<script type="module" src="./app.js"></script>'+html[m.end():]
     if re.search(r'(?:src|href)\s*=\s*["\'](?:https?:)?//', html, re.I) or re.search(r'https?://(?:cdn\.jsdelivr\.net|storage\.googleapis\.com)',js):
         raise RuntimeError('Unexpected external resource remains.')
